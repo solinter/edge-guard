@@ -169,11 +169,113 @@ flowchart TB
 - **Conflict handling**: explicit priority and fail-safe defaults (`DENY` on invalid policy or evaluation failure).
 - **Future direction**: external policy sources (for example remote control-plane or policy registry) are planned for later versions.
 
-### Geo Rule Types
+### Supported Rule Types
 
-- `country_in`: match when client country ISO (for example `DE`, `US`) is in `values`
-- `continent_in`: match when client continent code (for example `EU`, `NA`) is in `values`
-- `is_in_european_union`: match when EU membership boolean equals `value`
+All rules share these common fields:
+
+- `id` (string): unique rule identifier inside the policy
+- `priority` (integer): higher priority executes first
+- `action` (`allow` or `deny`): decision when the rule matches
+- `type` (string): matcher type from the list below
+
+`path_contains`
+
+- Match when `x-forwarded-uri` contains `value`.
+
+```yaml
+- id: deny-admin-path
+  priority: 300
+  action: deny
+  type: path_contains
+  value: /admin
+```
+
+`method_in`
+
+- Match when `x-forwarded-method` is in `values` (case-insensitive).
+
+```yaml
+- id: allow-standard-methods
+  priority: 10
+  action: allow
+  type: method_in
+  values: [GET, POST, PUT, PATCH, DELETE]
+```
+
+`header_equals`
+
+- Match when header `header` equals `value` (case-insensitive).
+
+```yaml
+- id: deny-bad-bot
+  priority: 250
+  action: deny
+  type: header_equals
+  header: user-agent
+  value: evil-bot
+```
+
+`header_regex`
+
+- Match when header `header` matches regex `pattern`.
+
+```yaml
+- id: deny-security-scanners
+  priority: 240
+  action: deny
+  type: header_regex
+  header: user-agent
+  pattern: "(?i)(sqlmap|nikto|nmap|acunetix)"
+```
+
+`ip_in_denylist`
+
+- Match when first IP in `x-forwarded-for` is in `values`.
+
+```yaml
+- id: deny-known-bad-ip
+  priority: 230
+  action: deny
+  type: ip_in_denylist
+  values:
+    - 203.0.113.66
+```
+
+`country_in`
+
+- Match when resolved GeoIP country ISO code is in `values` (for example `DE`, `US`).
+
+```yaml
+- id: deny-selected-countries
+  priority: 220
+  action: deny
+  type: country_in
+  values: [RU, KP]
+```
+
+`continent_in`
+
+- Match when resolved GeoIP continent code is in `values` (for example `EU`, `NA`).
+
+```yaml
+- id: deny-selected-continents
+  priority: 210
+  action: deny
+  type: continent_in
+  values: [AF]
+```
+
+`is_in_european_union`
+
+- Match when resolved GeoIP EU membership equals boolean `value`.
+
+```yaml
+- id: deny-non-eu
+  priority: 200
+  action: deny
+  type: is_in_european_union
+  value: false
+```
 
 For `is_in_european_union`, if GeoIP data is unavailable, Edge Guard treats it as non-EU (`false`) for safer deny-by-default behavior.
 
