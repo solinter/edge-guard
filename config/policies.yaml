@@ -1,0 +1,73 @@
+active_policy_id: baseline-v1
+policies:
+  - id: baseline-v1
+    description: Baseline static policy configured in service
+    rules:
+      - id: deny-admin-path
+        priority: 300
+        action: deny
+        type: path_contains
+        value: /admin
+
+      - id: deny-traversal-pattern
+        priority: 280
+        action: deny
+        type: path_contains
+        value: ../
+
+      - id: deny-suspicious-user-agent
+        priority: 250
+        action: deny
+        type: header_regex
+        header: user-agent
+        pattern: "(?i)(sqlmap|nikto|nmap|acunetix)"
+
+      - id: deny-bad-ip
+        priority: 240
+        action: deny
+        type: ip_in_denylist
+        values:
+          - 203.0.113.66
+
+      - id: allow-safe-default
+        priority: 10
+        action: allow
+        type: method_in
+        values:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+
+  - id: strict-v2
+    description: Stricter profile with path and geo deny rules
+    rules:
+      - id: deny-private-path
+        priority: 400
+        action: deny
+        type: path_contains
+        value: /private
+
+      - id: deny-non-eu
+        priority: 380
+        action: deny
+        type: is_in_european_union
+        value: false
+
+      - id: deny-admin-path
+        priority: 350
+        action: deny
+        type: path_contains
+        value: /admin
+
+      - id: allow-safe-default-v2
+        priority: 10
+        action: allow
+        type: method_in
+        values:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
