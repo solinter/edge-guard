@@ -388,20 +388,6 @@ curl -i http://localhost:8080/authorize \
 
 Expected result: `403` with `x-eg-policy-id: strict-v2` because `strict-v2` contains a deny rule for `/private`.
 
-## Example Geo Policy Rule
-
-`strict-v2` can include geo-based deny actions:
-
-```yaml
-- id: deny-non-eu
-  priority: 380
-  action: deny
-  type: is_in_european_union
-  value: false
-```
-
-With that rule enabled, requests from non-EU client IPs are denied (based on MaxMind lookup of `x-forwarded-for`).
-
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (`AGPL-3.0`).
