@@ -81,6 +81,28 @@ pub enum RuleKind {
     CountryIn { values: Vec<String> },
     ContinentIn { values: Vec<String> },
     IsInEuropeanUnion { value: bool },
+    Throttle(ThrottleRule),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThrottleRule {
+    pub max_requests: u64,
+    pub window_seconds: u64,
+    pub block_seconds: u64,
+    #[serde(default)]
+    pub key_by: Vec<ThrottleKey>,
+    #[serde(default)]
+    pub match_method_in: Vec<String>,
+    #[serde(default)]
+    pub match_path_prefix_in: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThrottleKey {
+    Method,
+    Path,
+    ClientIp,
 }
 
 #[derive(Debug, Clone, Serialize)]
