@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::models::{
     AuthContext, Decision, DecisionResult, NamedPolicy, PolicyFile, RuleAction, RuleConfig, RuleKind,
 };
+use crate::throttle::ThrottleService;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
@@ -44,6 +45,7 @@ impl PolicyEngine {
         &self,
         ctx: &AuthContext,
         requested_policy_id: Option<&str>,
+        throttle: &ThrottleService,
         trace_id: String,
     ) -> Result<DecisionResult, AppError> {
         let policy_id = requested_policy_id.unwrap_or(&self.active_policy_id);
@@ -56,6 +58,7 @@ impl PolicyEngine {
             &policy.id,
             &policy.rules,
             ctx,
+            throttle,
             trace_id,
         ))
     }
@@ -65,9 +68,10 @@ impl PolicyEngine {
         policy_id: &str,
         rules: &[RuleConfig],
         ctx: &AuthContext,
+        throttle: &ThrottleService,
         trace_id: String,
     ) -> DecisionResult {
-        evaluate_rules(policy_id, rules, ctx, trace_id)
+        evaluate_rules(policy_id, rules, ctx, throttle, trace_id)
     }
 }
 
@@ -75,13 +79,14 @@ fn evaluate_rules(
     policy_id: &str,
     rules: &[RuleConfig],
     ctx: &AuthContext,
+    throttle: &ThrottleService,
     trace_id: String,
 ) -> DecisionResult {
     let mut ordered = rules.to_vec();
     ordered.sort_by(|a, b| b.priority.cmp(&a.priority));
 
     for rule in ordered {
-        if rule_matches(&rule, ctx) {
+        if rule_matches(&rule, ctx, throttle) {
             let decision = match rule.action {
                 RuleAction::Allow => Decision::Allow,
                 RuleAction::Deny => Decision::Deny,
@@ -103,7 +108,7 @@ fn evaluate_rules(
     }
 }
 
-fn rule_matches(rule: &RuleConfig, ctx: &AuthContext) -> bool {
+fn rule_matches(rule: &RuleConfig, ctx: &AuthContext, throttle: &ThrottleService) -> bool {
     match &rule.kind {
         RuleKind::PathContains { value } => ctx.forwarded_uri.contains(value),
         RuleKind::MethodIn { values } => values
@@ -151,6 +156,7 @@ fn rule_matches(rule: &RuleConfig, ctx: &AuthContext) -> bool {
             Some(is_in_eu) => is_in_eu == *value,
             None => !*value,
         },
+        RuleKind::Throttle(config) => throttle.evaluate(&rule.id, config, ctx).limited,
     }
 }
 
@@ -163,6 +169,7 @@ fn header_value<'a>(ctx: &'a AuthContext, key: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::models::{RuleAction, RuleKind};
+    use crate::throttle::ThrottleService;
     use std::collections::HashMap;
 
     fn sample_ctx() -> AuthContext {
@@ -196,6 +203,7 @@ mod tests {
                 },
             }],
             &ctx,
+            &ThrottleService::new(),
             "trace-1".to_string(),
         );
         assert_eq!(result.decision, Decision::Deny);
@@ -215,6 +223,7 @@ mod tests {
                 },
             }],
             &ctx,
+            &ThrottleService::new(),
             "trace-2".to_string(),
         );
         assert_eq!(result.decision, Decision::Deny);
@@ -234,8 +243,36 @@ mod tests {
                 kind: RuleKind::IsInEuropeanUnion { value: false },
             }],
             &ctx,
+            &ThrottleService::new(),
             "trace-3".to_string(),
         );
         assert_eq!(result.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn throttle_blocks_after_threshold() {
+        let ctx = sample_ctx();
+        let throttle = ThrottleService::new();
+        let rules = vec![RuleConfig {
+            id: "limit-ip".to_string(),
+            priority: 500,
+            action: RuleAction::Deny,
+            kind: RuleKind::Throttle(crate::models::ThrottleRule {
+                max_requests: 2,
+                window_seconds: 60,
+                block_seconds: 10,
+                key_by: vec![crate::models::ThrottleKey::ClientIp],
+                match_method_in: vec!["GET".to_string()],
+                match_path_prefix_in: vec!["/admin".to_string()],
+            }),
+        }];
+
+        let r1 = evaluate_rules("p", &rules, &ctx, &throttle, "t1".to_string());
+        let r2 = evaluate_rules("p", &rules, &ctx, &throttle, "t2".to_string());
+        let r3 = evaluate_rules("p", &rules, &ctx, &throttle, "t3".to_string());
+
+        assert_eq!(r1.decision, Decision::Allow);
+        assert_eq!(r2.decision, Decision::Allow);
+        assert_eq!(r3.decision, Decision::Deny);
     }
 }

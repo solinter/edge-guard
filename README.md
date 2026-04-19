@@ -165,9 +165,19 @@ flowchart TB
 - **Fixed policies (v1)**: static rule sets configured in the Edge Guard service and applied by default to all traffic.
 - **Inline policies**: optional rules provided in trusted request metadata; validated before evaluation.
 - **Geo actions**: rules can match by country ISO code, continent code, or EU membership.
+- **Throttle actions**: rules can enforce request-rate limits and temporary blocks.
 - **Evaluation order**: normalize request -> apply pre-filters -> run matchers -> produce decision -> emit audit event.
 - **Conflict handling**: explicit priority and fail-safe defaults (`DENY` on invalid policy or evaluation failure).
 - **Future direction**: external policy sources (for example remote control-plane or policy registry) are planned for later versions.
+
+### Throttling Design
+
+- **Current backend**: in-memory sharded map (`DashMap`) with O(1) key access per request.
+- **Rule-scoped keys**: rate-limit counters are isolated per rule ID to prevent cross-rule collisions.
+- **Flexible key dimensions**: choose `client_ip`, `method`, `path`, or any combination in `key_by`.
+- **Window + block model**: fixed request window (`window_seconds`) and explicit block period (`block_seconds`).
+- **Memory safety**: periodic lazy cleanup removes stale counters and expired blocks.
+- **Horizontal-scaling ready**: throttling logic depends on a `ThrottleStore` abstraction, so a distributed backend (for example Redis) can replace the in-memory store without changing rule semantics.
 
 ### Supported Rule Types
 
@@ -279,6 +289,30 @@ All rules share these common fields:
 
 For `is_in_european_union`, if GeoIP data is unavailable, Edge Guard treats it as non-EU (`false`) for safer deny-by-default behavior.
 
+`throttle`
+
+- Match when request rate exceeds configured limit for a computed key.
+- On threshold overrun, the same key is blocked for `block_seconds`.
+- Key dimensions are controlled by `key_by` (`client_ip`, `method`, `path`).
+- Optional selectors:
+  - `match_method_in`: apply only for selected methods
+  - `match_path_prefix_in`: apply only for selected URI prefixes
+
+```yaml
+- id: throttle-login-ip-method
+  priority: 330
+  action: deny
+  type: throttle
+  max_requests: 20
+  window_seconds: 60
+  block_seconds: 300
+  key_by:
+    - client_ip
+    - method
+  match_path_prefix_in:
+    - /login
+```
+
 ## Rust Implementation Direction
 
 - Web stack: `axum` or `actix-web`
@@ -372,21 +406,23 @@ curl -i http://localhost:8080/authorize \
 
 Expected result: `403` with `x-eg-policy-id: partner-a-v1` and `x-eg-decision: DENY`.
 
-## Example Fixed Check With Non-Active Policy ID
+## Example Throttle Check With Non-Active Policy ID
 
 Use fixed mode and select a configured policy ID that is not the active default (`baseline-v1`), for example `strict-v2`.
 
 ```bash
-curl -i http://localhost:8080/authorize \
-  -H "x-forwarded-method: GET" \
-  -H "x-forwarded-uri: /private/report" \
-  -H "x-forwarded-host: example.local" \
-  -H "x-forwarded-for: 203.0.113.10" \
-  -H "x-eg-policy-mode: fixed" \
-  -H "x-eg-fixed-policy-id: strict-v2"
+for i in $(seq 1 25); do
+  curl -s -o /dev/null -w "req=${i} status=%{http_code}\n" http://localhost:8080/authorize \
+    -H "x-forwarded-method: POST" \
+    -H "x-forwarded-uri: /login" \
+    -H "x-forwarded-host: example.local" \
+    -H "x-forwarded-for: 203.0.113.10" \
+    -H "x-eg-policy-mode: fixed" \
+    -H "x-eg-fixed-policy-id: strict-v2"
+done
 ```
 
-Expected result: `403` with `x-eg-policy-id: strict-v2` because `strict-v2` contains a deny rule for `/private`.
+Expected result: first requests are allowed, then after threshold is exceeded (`max_requests: 20`), status becomes `403` with reason `matched_rule:throttle-login-ip-method`.
 
 ## License
 

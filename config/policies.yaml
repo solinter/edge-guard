@@ -61,6 +61,19 @@ policies:
         type: path_contains
         value: /admin
 
+      - id: throttle-login-ip-method
+        priority: 330
+        action: deny
+        type: throttle
+        max_requests: 20
+        window_seconds: 60
+        block_seconds: 300
+        key_by:
+          - client_ip
+          - method
+        match_path_prefix_in:
+          - /login
+
       - id: allow-safe-default-v2
         priority: 10
         action: allow

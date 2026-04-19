@@ -3,6 +3,7 @@ mod error;
 mod geo;
 mod models;
 mod policy;
+mod throttle;
 
 use axum::{
     extract::State,
@@ -19,6 +20,7 @@ use models::{AuthContext, Decision, InlinePolicyEnvelope, PolicyMode};
 use policy::PolicyEngine;
 use serde_json::json;
 use std::{collections::HashMap, net::{IpAddr, SocketAddr}, sync::Arc};
+use throttle::ThrottleService;
 use tokio::signal;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -27,6 +29,7 @@ use uuid::Uuid;
 struct AppState {
     engine: Arc<PolicyEngine>,
     geo: Arc<GeoIpResolver>,
+    throttle: Arc<ThrottleService>,
     config: Arc<AppConfig>,
 }
 
@@ -41,10 +44,12 @@ async fn main() -> Result<(), AppError> {
         .map_err(|e| AppError::Config(format!("invalid EDGE_GUARD_LISTEN_ADDR: {e}")))?;
     let engine = Arc::new(PolicyEngine::from_file(&config.policy_file)?);
     let geo = Arc::new(GeoIpResolver::from_mmdb_file(&config.geoip_db_file)?);
+    let throttle = Arc::new(ThrottleService::new());
 
     let state = AppState {
         engine,
         geo,
+        throttle,
         config,
     };
     let app = router(state);
@@ -119,14 +124,25 @@ async fn authorize(
             let requested_fixed_policy_id = header_str(&headers, "x-eg-fixed-policy-id");
             state
                 .engine
-                .evaluate_fixed(&context, requested_fixed_policy_id, trace_id.clone())?
+                .evaluate_fixed(
+                    &context,
+                    requested_fixed_policy_id,
+                    &state.throttle,
+                    trace_id.clone(),
+                )?
         }
         PolicyMode::Inline => {
             ensure_inline_allowed(&state.config, &headers)?;
             let inline = parse_inline_policy(&headers)?;
             state
                 .engine
-                .evaluate_inline(&inline.policy_id, &inline.rules, &context, trace_id.clone())
+                .evaluate_inline(
+                    &inline.policy_id,
+                    &inline.rules,
+                    &context,
+                    &state.throttle,
+                    trace_id.clone(),
+                )
         }
     };
 
@@ -330,8 +346,14 @@ policies:
         });
 
         let geo = Arc::new(GeoIpResolver::disabled());
+        let throttle = Arc::new(ThrottleService::new());
 
-        AppState { engine, geo, config }
+        AppState {
+            engine,
+            geo,
+            throttle,
+            config,
+        }
     }
 
     #[tokio::test]
